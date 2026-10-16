@@ -1,61 +1,68 @@
-# GameOfLife_BackOnTime
+# Reverse Game of Life with MaxSAT
 
-**João Armênio Silveira**
+Given a state of [Conway's Game of Life](https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life), this program finds a **previous state** that produces it in one step, and among all valid predecessors it looks for the one with the **fewest live cells**. Running the Game of Life backwards has no direct formula, so the problem is encoded as **weighted CNF** and solved with the MaxSAT solver [Open-WBO](https://github.com/sat-group/open-wbo).
 
-**Fábio Naconeczny da Silva**
+<p align="center">
+  <img src="assets/heart-predecessor.png" alt="Left: the predecessor found by the solver. Right: the heart-shaped input state it evolves into" width="640">
+</p>
 
-Esse trabalho consiste na implementação de uma forma de retornar a um estado anterior do famoso "Conway's Game of Life". Seguem os detalhes da implementação.
+## How it works
 
----
+### 1. Encoding
 
-A abordagem implementada usa técnicas baseadas em SAT e MaxSAT para explorar e validar estados possíveis que atendam às restrições do jogo.
+Each cell of the board is a Boolean variable that is true if the cell is **alive in the previous state**. For every cell, the program writes clauses that force the previous state to evolve into the given one. The rules come from S. Bain's *Time-Reversal in Conway's Life as SAT* (2007), adapted to MaxSAT:
 
-O programa opera nas seguintes fases:
+| Cell in the given state | Rule | What the clauses forbid in the previous state |
+|---|---|---|
+| Alive | Loneliness | Fewer than 2 live neighbors |
+| Alive | Stagnation | A dead cell with exactly 2 live neighbors |
+| Alive | Overcrowding | More than 3 live neighbors |
+| Dead | Preservation | A live cell with exactly 2 live neighbors |
+| Dead | Life | Any cell with exactly 3 live neighbors |
 
-Geração de cláusulas: transforma o problema do Game of Life em uma formulação lógica no formato DIMACS/Weighted CNF. Cláusulas baseadas no artigo "Time-Reversal in Conway’s Life as SAT. Stuart Bain. 2007 Arquivo" adaptado para MaxSAT.
-Resolução via MaxSAT: Usa o SAT solver Open-WBO para encontrar soluções que satisfaçam as restrições e minimizem o número de células vivas.
+The clauses are produced by recursively enumerating subsets of each cell's neighbors. Border and corner cells have fewer neighbors and get their own generators.
 
-### Estratégia implementada
-Geração de cláusulas:
+### 2. Optimization
 
-Cada célula da matriz é representada por uma variável única.
-As regras do Game of Life (loneliness, stagnation, overcrowding, preservation e life) são mapeadas para cláusulas lógicas por meio de recursões que agrupam e adicionam cada subconjunto de vizinhos para cada célula e as adicionam como cláusulas no arquivo clauses.wcnf.
-Cláusulas são geradas separadamente para células vivas e mortas em cada geração.
-Para bordas e cantos, que possuem menos vizinhos, funções específicas geram cláusulas considerando os vizinhos válidos.
-São adicionadas clausulas "soft" de peso 1 para cada célula do mapa negada, assim priorizando soluções com menos células vivas.
+- The clauses above are **hard** (weight 10), so any solution must satisfy them.
+- One **soft** clause `¬cell` (weight 1) per cell makes the solver prefer predecessors with **fewer live cells**.
 
-### Resolução
+### 3. Solving
 
-MaxSAT Solver: É feita a chamada pelo comando system() do solver open-wbo. O processo é interrompido após encontrar uma solução ótima, UNSAT ou ao atingir o tempo limite definido (5 minutos), onde ele responde com a melhor solução encontrada nesse intervalo.
+The formula is written to `solution/clauses.wcnf` and Open-WBO is called with a 5-minute limit. It returns the optimum, reports UNSAT (the pattern is a [Garden of Eden](https://en.wikipedia.org/wiki/Garden_of_Eden_(cellular_automaton)), which has no predecessor) or, when time runs out, the best solution found so far. Then the assignment is decoded back into a board.
 
----
+A first approach with a plain SAT solver is also implemented (`findBestSolution`). It finds any solution, adds its negation as a new clause and repeats until no better one exists. It was much slower than MaxSAT, especially on boards larger than 15×15.
 
-### Organização dos arquivos:
+## Usage
 
-clauses.h e clauses.c: contém as definições e implementações para gerar as cláusulas do problema.
-test.h e test.c: funções para verificar e simular as transições entre estados do Game of Life.
-utils.h e utils.c: utilitários gerais para manipulação de matrizes, leitura de entradas, escrita de saídas e interação com os arquivos de solução.
-goingBack.c: arquivo principal que coordena a execução do programa, invocando funções de geração de cláusulas e integração com os solvers.
-Makefile: automação para compilar e gerar executável.
+```bash
+make
+./goingBack input.txt
+./goingBack -verify examples/heart.txt   # also simulates one step and checks every cell
+```
 
----
+The input file gives the board size followed by the cells (`1` = alive). The outermost ring of the board must be dead, and cells outside the board count as dead.
 
-### Observações:
+```text
+4 6
+0 0 0 0 0 0
+0 0 1 1 0 0
+0 0 0 1 1 0
+0 0 0 0 0 0
+```
 
-Além da implementação com o MaxSAT solver também há a implementação usando um SAT solver padrão, na função findBestSolution(). Uma solução alternativa, que busca uma solução qualquer às cláusulas, e ao encontrar, insere ela negada como uma cláusula como entrada novamente para o solver, apenas parando quando a melhor solução for encontrada. Essa solução se mostrou bem mais lenta, principalmente em situações de matrizes maiores que 15x15 no tempo limite de 5 minutos.
+The predecessor is printed in the terminal. The generated formula goes to `solution/clauses.wcnf` and the solver's answer to `solution/solution.txt`.
 
-### Compilação e execução:
+> The `open-wbo` binary in this repository is built for Linux x86-64. On other systems, build it from the [Open-WBO source](https://github.com/sat-group/open-wbo) and place the executable in the project root.
 
-1. Compile o programa:
-```make```
+## Project structure
 
-2. Execute o programa com um arquivo de entrada:
-```./goingBack input.txt```
-
-* Se executar com a flag "-verify" verifica se a solução está correta: `./goingBack -verify input.txt`
-
-3. Outputs gerados:
-
-Impressão no terminal da solução.
-solution/clauses.wcnf: arquivo de cláusulas.
-solution/solution.txt: estado anterior encontrado.
+```text
+src/
+├── goingBack.c   # entry point: reads the input, builds the formula, calls the solver
+├── clauses.c     # clause generation for each Game of Life rule
+├── test.c        # one-step simulation and cell-by-cell verification
+└── utils.c       # I/O, neighbor lookup, solution parsing, SAT-only search
+include/          # headers
+examples/         # sample inputs
+```
